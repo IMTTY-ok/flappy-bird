@@ -8,6 +8,7 @@ Everything ships in `index.html` - no build step, no bundler, no framework. Open
 
 - Fixed-timestep physics, so the game plays identically on 60Hz and 144Hz displays
 - Keyboard, mouse and touch controls
+- A 3 - 2 - 1 - GO! countdown with the board frozen, so you are never caught mid-keystroke
 - Locally generated sound effects (WebAudio, no audio files)
 - Personal best saved to `localStorage`
 - A fresh name for every single run - each game is stored as its own session
@@ -40,7 +41,8 @@ A dialog owns the keyboard while it is open, and the run is frozen behind it, so
 1. You press play and the **name dialog** opens. Every run asks again - the name is not remembered as "your" name, it belongs to that one game.
 2. The name is trimmed, stripped of control characters and angle brackets, and must be 2-20 characters (counted in code points, so an emoji counts as one).
 3. The game waits up to 5 seconds for anonymous sign-in, writes a `gameSessions` document, and only then starts the run.
-4. On game over the session is closed, your personal best is updated if - and only if - this run beat it, and your global rank is shown.
+4. A **3 - 2 - 1 - GO!** countdown runs on the frozen board. Flapping, pipes, scoring and collisions are all paused until it ends, so nothing can happen while you get ready.
+5. On game over the session is closed, your personal best is updated if - and only if - this run beat it, and your global rank is shown.
 
 If Firebase is slow or unreachable the name is still required, the run still starts, and the session is simply skipped. The game never waits on the network.
 

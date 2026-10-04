@@ -319,7 +319,7 @@ const MIN_GAP = 112;             // smallest gap (difficulty cap)
 const GAP_MARGIN = 62;           // keep the gap away from the ceiling / ground
 const PIPE_SPACING = 205;        // minimum horizontal distance between two pipes
 
-const STATE = { START: 'START', PLAYING: 'PLAYING', GAME_OVER: 'GAME_OVER' };
+const STATE = { START: 'START', COUNTDOWN: 'COUNTDOWN', PLAYING: 'PLAYING', GAME_OVER: 'GAME_OVER' };
 
 /* ---------- Small helpers ---------- */
 const clamp = (v, min, max) => Math.max(min, Math.min(max, v));
@@ -525,6 +525,18 @@ let groundOffset = 0;
 let shake = 0;                 // screen-shake timer
 let idleTime = 0;              // used for the gentle hover on the menu
 
+/* ---------- Countdown: 3 - 2 - 1 - GO! ----------
+   It runs on the game's own fixed 60 steps-per-second loop instead of a second
+   setInterval, so there is exactly one clock and one animation loop in the page.
+   While state is COUNTDOWN nothing in the world moves: updateGame() returns
+   before the physics, the pipes, the scoring and the collision check, and flap()
+   ignores input, so the bird cannot flap early. */
+const COUNTDOWN_FROM = 3;      // counts 3, 2, 1 - one second each
+const COUNTDOWN_GO = 0.45;     // how long "GO!" stays up before the run starts
+let countdownStep = 0;         // seconds elapsed in the current countdown
+let countdownLabel = '';       // what is drawn right now ('' = not counting)
+let countdownFlap = false;     // replay the first flap when the run really starts
+
 /* ---------- Screens ---------- */
 function showScreen(which) {
   startScreen.classList.toggle('hidden', which !== 'START');
@@ -532,8 +544,9 @@ function showScreen(which) {
 }
 
 /* ---------- Start / reset ---------- */
-/* The actual run. Everything above this line (name prompt, game session) happens
-   in startGame(); this function is the untouched gameplay entry point. */
+/* The actual run. Everything above this line (name prompt, game session,
+   countdown) happens in startGame(); this function is the untouched gameplay
+   entry point. */
 function beginRun() {
   initAudio();                 // audio is only allowed after a user gesture
   playSound('click');
@@ -542,12 +555,48 @@ function beginRun() {
   showScreen(null);
 }
 
+/* 3 - 2 - 1 - GO!, then the run. Called once per game, right after the player
+   has entered a name and the game session has been created. */
+function beginCountdown(flapAfter) {
+  stopCountdown();                     // a new game never stacks two countdowns
+  resetGame();                         // fresh bird and pipes, all still frozen
+  state = STATE.COUNTDOWN;
+  showScreen(null);
+  countdownStep = 0;
+  countdownFlap = !!flapAfter;
+  countdownLabel = String(COUNTDOWN_FROM);
+}
+
+/* Clears a running countdown. Called before every new countdown, when a run
+   starts and when the player bails out, so no timer is ever left behind. */
+function stopCountdown() {
+  countdownStep = 0;
+  countdownLabel = '';
+  countdownFlap = false;
+}
+
+/* One fixed step of the countdown. Hands over to beginRun() when it is done. */
+function updateCountdown() {
+  countdownStep += 1 / 60;
+  if (countdownStep >= COUNTDOWN_FROM + COUNTDOWN_GO) {
+    const flapAfter = countdownFlap;
+    stopCountdown();
+    beginRun();
+    if (flapAfter) flap();             // the opening lift, exactly at "GO!"
+    return;
+  }
+  const number = COUNTDOWN_FROM - Math.floor(countdownStep);
+  countdownLabel = countdownStep < COUNTDOWN_FROM ? String(Math.max(1, number)) : 'GO!';
+}
+
 /* Starts a run, but only through the full online flow:
-      ask for a name -> create a game session -> begin the run
-   A run is never started before the player has entered a name. If Firebase is
-   unavailable the session is skipped and the game still starts normally. */
+      ask for a name -> create a game session -> count down -> begin the run
+    A run is never started before the player has entered a name, and the name is
+    asked again for every single game. If Firebase is unavailable the session is
+    skipped and the game still counts down and starts normally. */
 async function startGame(options) {
   if (startPending || modalOpen()) return;         // one name prompt at a time
+  if (state === STATE.COUNTDOWN) return;          // the countdown owns the screen
   startPending = true;
   try {
     const name = await showNameSetup();             // resolves only on a valid name
@@ -559,8 +608,7 @@ async function startGame(options) {
     await waitForAuth();                            // best effort, never blocks long
     await createGameSession(name);                  // skipped when offline
 
-    beginRun();
-    if (options && options.flap) flap();
+    beginCountdown(options && options.flap);
   } finally {
     startPending = false;
   }
@@ -666,6 +714,8 @@ function checkCollision() {
 
 /* ---------- Game over ---------- */
 function gameOver() {
+  if (state !== STATE.PLAYING) return;    // only a run that is actually going can end
+  stopCountdown();                        // belt and braces: no countdown may outlive a run
   state = STATE.GAME_OVER;
   shake = 0.45;                       // short screen shake on the crash
 
@@ -705,6 +755,13 @@ function updateGame() {
     q.x += q.vx; q.y += q.vy; q.life -= 0.05;
   }
   particles = particles.filter(q => q.life > 0);
+
+  if (state === STATE.COUNTDOWN) {
+    // The bird is parked in the middle and the world is frozen: no gravity, no
+    // pipes, no scoring and no collision until "GO!" has been and gone.
+    updateCountdown();
+    return;
+  }
 
   if (state !== STATE.PLAYING) {
     // Bird slowly hovers up and down on the menus
@@ -941,6 +998,29 @@ function drawScore() {
   ctx.restore();
 }
 
+/* --- Countdown: 3 - 2 - 1 - GO! --- */
+function drawCountdown() {
+  if (state !== STATE.COUNTDOWN || !countdownLabel) return;
+  const into = countdownStep - Math.floor(countdownStep);        // 0..1 in this beat
+  const isGo = countdownLabel === 'GO!';
+  // each number pops in and settles at full size, "GO!" fades as it hands over
+  const pop = isGo ? 1 : 1 + 0.4 * Math.pow(1 - into, 2);
+  const fade = isGo ? Math.max(0, 1 - into * 0.9) : 1;
+  ctx.save();
+  ctx.translate(W / 2, H / 2 - 24);
+  ctx.scale(pop, pop);
+  ctx.globalAlpha = fade;
+  ctx.font = 'bold 104px "Trebuchet MS", sans-serif';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.lineWidth = 10;
+  ctx.strokeStyle = 'rgba(0,0,0,0.45)';
+  ctx.strokeText(countdownLabel, 0, 0);
+  ctx.fillStyle = isGo ? '#5cc44e' : '#fff';                     // grass green, like the ground
+  ctx.fillText(countdownLabel, 0, 0);
+  ctx.restore();
+}
+
 /* --- Master draw function --- */
 function drawGame() {
   ctx.clearRect(0, 0, W, H);
@@ -960,6 +1040,8 @@ function drawGame() {
   drawScore();
 
   if (shake > 0) ctx.restore();
+
+  drawCountdown();               // sits above the world, not shaken with it
 
   // "Press SPACE / CLICK to Fly" reminder while the first pipe approaches
   if (state === STATE.PLAYING && score === 0) {
@@ -1032,9 +1114,16 @@ document.addEventListener('keydown', (e) => {
   const key = e.key;
   if (e.repeat) return;                         // ignore auto-repeat while holding
 
-  // While a modal is open it owns the keyboard (the username input handles its
+  // While a modal is open it owns the keyboard (the name input handles its
   // own keys), so Space / Enter must not start a run behind it.
   if (modalOpen() && (key === ' ' || key === 'Spacebar' || key === 'ArrowUp' || key === 'Enter')) return;
+
+  // The countdown owns the screen: keys are swallowed so they cannot flap and
+  // cannot open a second name dialog before this run has even started.
+  if (state === STATE.COUNTDOWN) {
+    if (key === ' ' || key === 'Spacebar' || key === 'ArrowUp' || key === 'Enter') e.preventDefault();
+    return;
+  }
 
   if (key === ' ' || key === 'Spacebar' || key === 'ArrowUp') {
     e.preventDefault();                         // stops page scrolling AND the
