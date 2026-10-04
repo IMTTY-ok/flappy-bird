@@ -1,0 +1,1440 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+<title>Flappy Bird - Canvas Game</title>
+
+<style>
+  /* ---------- Page / layout ---------- */
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  html, body {
+    height: 100%;
+    background: #1b2a4a;
+    background: radial-gradient(circle at 50% 0%, #2b4a7d 0%, #16233d 70%, #101a2e 100%);
+    font-family: "Trebuchet MS", "Segoe UI", system-ui, sans-serif;
+    color: #fff;
+    overflow: hidden;
+    -webkit-tap-highlight-color: transparent;
+    user-select: none;
+  }
+
+  body {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 10px;
+  }
+
+  /* The stage width drives every size in the UI: the overlay text uses "em"
+     units, so they all scale with the stage instead of the window. */
+  :root {
+    --stage-w: min(94vw, calc((100vh - 120px) * 0.6667), 480px);
+  }
+
+  /* The "stage" holds the canvas and the HTML overlays.
+     Its aspect ratio is fixed (2 : 3) so the game always scales nicely. */
+  .stage {
+    position: relative;
+    width: var(--stage-w);
+    aspect-ratio: 2 / 3;
+    border-radius: 18px;
+    overflow: hidden;
+    box-shadow: 0 18px 50px rgba(0, 0, 0, .55), 0 0 0 4px rgba(255, 255, 255, .07);
+    font-size: calc(var(--stage-w) * .05);   /* 1 em = 5% of the stage width */
+  }
+
+  canvas {
+    display: block;
+    width: 100%;
+    height: 100%;
+    touch-action: manipulation;
+  }
+
+  /* ---------- Top bar (mute button) ---------- */
+  .topbar {
+    position: absolute;
+    top: 2.2%;
+    left: 0;
+    width: 100%;
+    display: flex;
+    justify-content: flex-end;
+    padding: 0 3%;
+    pointer-events: none;
+    z-index: 3;
+  }
+
+  .icon-btn {
+    pointer-events: auto;
+    touch-action: manipulation;
+    display: grid;
+    place-items: center;
+    min-width: 1.8em;
+    min-height: 1.8em;
+    font-size: 1.25em;
+    line-height: 1;
+    padding: .3em .45em;
+    border: none;
+    border-radius: .6em;
+    background: rgba(0, 0, 0, .35);
+    color: #fff;
+    cursor: pointer;
+    box-shadow: 0 2px 6px rgba(0, 0, 0, .35);
+  }
+  .icon-btn:active { transform: scale(.92); }
+
+  /* ---------- Overlays (Start / Game Over) ---------- */
+  .overlay {
+    position: absolute;
+    inset: 0;
+    z-index: 2;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: .9em;
+    text-align: center;
+    padding: 6%;
+    overflow: hidden;
+    background: rgba(8, 16, 32, .45);
+    backdrop-filter: blur(2px);
+  }
+  .overlay.hidden { display: none; }
+
+  .overlay h1 {
+    font-size: 2.1em;
+    line-height: 1.1;
+    max-width: 100%;
+    letter-spacing: .04em;
+    color: #ffe14d;
+    text-shadow: 0 .12em 0 #b8860b, 0 .22em .18em rgba(0, 0, 0, .45);
+  }
+
+  .overlay p {
+    font-size: 1.25em;
+    max-width: 100%;
+    font-weight: bold;
+    opacity: .95;
+    text-shadow: 0 .1em .15em rgba(0, 0, 0, .5);
+  }
+  .overlay p.hint { font-size: 1.15em; font-weight: normal; opacity: .85; }
+
+  .big-btn {
+    margin-top: .4em;
+    touch-action: manipulation;
+    font-family: inherit;
+    font-size: 1.7em;
+    max-width: 100%;
+    font-weight: bold;
+    color: #fff;
+    padding: .55em 1.2em;
+    border: none;
+    border-radius: .6em;
+    background: linear-gradient(#5fd35f, #2f9e2f);
+    box-shadow: 0 .18em 0 #1c6b1c, 0 .3em .5em rgba(0, 0, 0, .4);
+    cursor: pointer;
+    transition: transform .06s ease;
+  }
+  .big-btn:active { transform: translateY(.14em); box-shadow: 0 .04em 0 #1c6b1c; }
+
+  .stats { display: flex; gap: 1.8em; font-size: 2em; font-weight: bold; }
+  .stats span { display: block; font-size: .5em; letter-spacing: .12em; opacity: .8; }
+  .stats b { color: #ffe14d; font-size: 1.35em; }
+
+  /* ---------- Score records (today / this week / all time) ---------- */
+  .records { display: flex; justify-content: center; gap: 1.1em; }
+  .records div { text-align: center; }
+  .records b { display: block; color: #ffe14d; font-size: 1.6em; }
+  .records span { display: block; font-size: .62em; letter-spacing: .08em; opacity: .8; }
+  .new-record { color: #ffe14d; font-weight: bold; opacity: 1; }
+
+  .hint-keys { font-size: 1.05em; opacity: .7; }
+
+  /* ---------- Online leaderboard (Firebase) ---------- */
+  .topbar { gap: .5em; }
+
+  /* The leaderboard has to fit 10 rows plus a rank block and a button, so this
+     overlay is spaced tighter than the start / game-over screens. The other
+     overlays keep their original spacing. */
+  .overlay.scrollable { justify-content: flex-start; gap: .55em; padding: 1.1em .8em; }
+  .overlay.scrollable h1 { font-size: 1.5em; }
+  .overlay.scrollable p { font-size: 1em; }
+
+  .lb-table { width: 100%; min-height: 0; overflow-y: auto; margin: .2em 0; }
+  .lb-head, .lb-row {
+    display: grid;
+    grid-template-columns: 2.2em 1fr 2.6em;
+    align-items: center;
+    gap: .3em;
+    text-align: left;
+  }
+  .lb-head { font-size: .7em; letter-spacing: .1em; opacity: .7; padding-bottom: .3em; }
+  .lb-head span:last-child, .lb-row span:last-child { text-align: right; }
+  .lb-row {
+    font-size: 1.05em;
+    padding: .22em .3em;
+    border-radius: .35em;
+    background: rgba(255, 255, 255, .06);
+    margin-bottom: .22em;
+  }
+  .lb-row.me { background: rgba(255, 225, 77, .22); box-shadow: inset 0 0 0 1px rgba(255, 225, 77, .5); }
+  .lb-row.me span:first-child, .lb-row.me span:nth-child(2) { color: #ffe14d; font-weight: bold; }
+  .lb-row.gold span:first-child { color: #ffd700; }
+
+  .lb-me {
+    width: 100%;
+    margin-top: .5em;
+    padding-top: .5em;
+    border-top: 1px solid rgba(255, 255, 255, .18);
+  }
+  .lb-me-label { display: block; font-size: .7em; letter-spacing: .1em; opacity: .7; margin-bottom: .25em; }
+  .lb-me-inline { font-size: 1.1em; }
+  .lb-me-inline b { color: #ffe14d; }
+
+  /* Username setup */
+  .name-input {
+    width: 100%;
+    font-family: inherit;
+    font-size: 1.3em;
+    text-align: center;
+    color: #fff;
+    background: rgba(0, 0, 0, .35);
+    border: 2px solid rgba(255, 255, 255, .3);
+    border-radius: .5em;
+    padding: .4em .3em;
+  }
+  .name-input:focus { outline: none; border-color: #ffe14d; }
+  .name-error { color: #ff9d9d; font-size: .95em; }
+</style>
+</head>
+
+<body>
+
+<div class="stage" id="stage">
+  <canvas id="game" width="480" height="720"></canvas>
+
+  <!-- Mute / unmute button + online leaderboard -->
+  <div class="topbar">
+    <button class="icon-btn" id="lbBtn" title="Global Leaderboard" aria-label="Open the global leaderboard">🏆</button>
+    <button class="icon-btn" id="muteBtn" title="Mute / Unmute" aria-label="Mute or unmute sound">🔊</button>
+  </div>
+
+  <!-- START screen -->
+  <div class="overlay" id="startScreen">
+    <h1>FLAPPY BIRD</h1>
+    <p class="hint">Press SPACE / CLICK to Fly</p>
+    <button class="big-btn" id="startBtn">Start Game</button>
+    <div class="records">
+      <div><b data-record="today">0</b><span>TODAY'S BEST</span></div>
+      <div><b data-record="week">0</b><span>WEEK'S BEST</span></div>
+      <div><b data-record="allTime">0</b><span>ALL-TIME BEST</span></div>
+    </div>
+    <p class="hint-keys">Desktop: SPACE / CLICK &nbsp;•&nbsp; Mobile: TAP</p>
+  </div>
+
+  <!-- GAME OVER screen -->
+  <div class="overlay hidden" id="overScreen">
+    <h1>GAME OVER</h1>
+    <div class="stats">
+      <div><b id="finalScore">0</b><span>SCORE</span></div>
+      <div><b id="bestScore" data-record="allTime">0</b><span>ALL-TIME BEST</span></div>
+    </div>
+    <div class="records">
+      <div><b data-record="today">0</b><span>TODAY'S BEST</span></div>
+      <div><b data-record="week">0</b><span>WEEK'S BEST</span></div>
+    </div>
+    <p class="hint-keys new-record" id="newRecord" hidden>NEW ALL-TIME BEST!</p>
+    <button class="big-btn" id="restartBtn">Restart</button>
+    <p class="hint-keys">Press ENTER or SPACE to play again</p>
+  </div>
+
+  <!-- GLOBAL LEADERBOARD (online, Firebase) -->
+  <div class="overlay scrollable hidden" id="leaderboard">
+    <h1>🏆 LEADERBOARD</h1>
+    <p class="hint" id="lbOnline">ONLINE BEST: —</p>
+    <p class="hint" id="lbStatus">Loading leaderboard...</p>
+    <div class="lb-table" id="lbTable" hidden>
+      <div class="lb-head"><span>#</span><span>PLAYER</span><span>SCORE</span></div>
+      <div id="lbRows"></div>
+    </div>
+    <div class="lb-me" id="lbMe" hidden>
+      <span class="lb-me-label">YOUR POSITION</span>
+      <div id="lbMeBody"></div>
+    </div>
+    <button class="big-btn" id="lbClose">CLOSE</button>
+  </div>
+
+  <!-- USERNAME SETUP (first run only) -->
+  <div class="overlay hidden" id="nameModal">
+    <h1>ENTER YOUR USERNAME</h1>
+    <p class="hint">3 to 20 characters</p>
+    <input class="name-input" id="nameInput" type="text" maxlength="20" autocomplete="off" spellcheck="false" placeholder="Your Name" />
+    <p class="hint name-error" id="nameError" hidden></p>
+    <button class="big-btn" id="namePlay">PLAY</button>
+  </div>
+</div>
+
+<script>
+/* =========================================================================
+   FLAPPY BIRD - single file HTML5 Canvas game
+   Sections:
+     1. Constants          5. Game logic (start/reset/flap/update/...)
+     2. Sound (Web Audio)  6. Drawing
+     3. Storage helpers    7. Input & game loop
+     4. Game state
+   ========================================================================= */
+
+/* ---------- 1. Constants ---------- */
+const W = 480, H = 720;          // logical canvas size (scaled to fit the screen)
+const GROUND_H = 90;             // height of the ground strip
+
+const BIRD_X = W * 0.32;         // bird stays at a fixed horizontal position
+const BIRD_R = 17;               // bird "radius" used for collision
+const GRAVITY = 0.46;            // how fast the bird falls each frame
+const FLAP_VELOCITY = -7.6;      // upward push when flapping
+const MAX_FALL_SPEED = 11;       // terminal velocity, keeps the bird controllable
+
+const PIPE_W = 62;               // pipe width
+const START_GAP = 175;           // gap between pipes at the beginning
+const MIN_GAP = 112;             // smallest gap (difficulty cap)
+const GAP_MARGIN = 62;           // keep the gap away from the ceiling / ground
+const PIPE_SPACING = 205;        // minimum horizontal distance between two pipes
+
+const STATE = { START: 'START', PLAYING: 'PLAYING', GAME_OVER: 'GAME_OVER' };
+
+/* ---------- Small helpers ---------- */
+const clamp = (v, min, max) => Math.max(min, Math.min(max, v));
+const rand = (min, max) => min + Math.random() * (max - min);
+
+/* =========================================================================
+   2. SOUND - everything is generated with the Web Audio API
+      (no .mp3 / .wav / .ogg files needed)
+   ========================================================================= */
+let audioCtx = null;             // created lazily, after the first user gesture
+let muted = false;
+
+/* Create / resume the audio context. Browsers block audio until the user
+   interacts with the page, so this is always called from a click / key press. */
+function initAudio() {
+  try {
+    if (!audioCtx) {
+      const AC = window.AudioContext || window.webkitAudioContext;
+      if (!AC) return;
+      audioCtx = new AC();
+    }
+    if (audioCtx.state === 'suspended') audioCtx.resume();
+  } catch (e) { /* audio is optional - never break the game */ }
+}
+
+/* Generic tone helper: plays one oscillator note with an optional pitch slide. */
+function tone(freq, endFreq, duration, type, volume, delay) {
+  if (muted || !audioCtx) return;
+  const t0 = audioCtx.currentTime + (delay || 0);
+  const osc = audioCtx.createOscillator();
+  const gain = audioCtx.createGain();
+
+  osc.type = type || 'sine';
+  osc.frequency.setValueAtTime(freq, t0);
+  if (endFreq && endFreq !== freq) {
+    osc.frequency.exponentialRampToValueAtTime(Math.max(1, endFreq), t0 + duration);
+  }
+
+  // Quick fade in / fade out so the note does not click
+  gain.gain.setValueAtTime(0.0001, t0);
+  gain.gain.exponentialRampToValueAtTime(volume, t0 + 0.012);
+  gain.gain.exponentialRampToValueAtTime(0.0001, t0 + duration);
+
+  osc.connect(gain).connect(audioCtx.destination);
+  osc.start(t0);
+  osc.stop(t0 + duration + 0.02);
+}
+
+/* Short white-noise burst, used for the crash sound. */
+function noise(duration, volume) {
+  if (muted || !audioCtx) return;
+  const len = Math.floor(audioCtx.sampleRate * duration);
+  const buffer = audioCtx.createBuffer(1, len, audioCtx.sampleRate);
+  const data = buffer.getChannelData(0);
+  for (let i = 0; i < len; i++) data[i] = (Math.random() * 2 - 1) * (1 - i / len);
+
+  const src = audioCtx.createBufferSource();
+  src.buffer = buffer;
+  const gain = audioCtx.createGain();
+  gain.gain.setValueAtTime(volume, audioCtx.currentTime);
+  gain.gain.exponentialRampToValueAtTime(0.0001, audioCtx.currentTime + duration);
+
+  src.connect(gain).connect(audioCtx.destination);
+  src.start();
+}
+
+/* The four game sounds + a UI click */
+function playSound(name) {
+  if (!audioCtx || muted) return;
+  switch (name) {
+    case 'flap':      // short rising "whoop"
+      tone(520, 780, 0.10, 'triangle', 0.18, 0);
+      break;
+    case 'point':     // happy two-note ding
+      tone(880, 880, 0.09, 'sine', 0.16, 0);
+      tone(1320, 1320, 0.16, 'sine', 0.14, 0.09);
+      break;
+    case 'crash':     // noise burst + low thud
+      noise(0.22, 0.35);
+      tone(220, 60, 0.28, 'sawtooth', 0.20, 0);
+      break;
+    case 'gameover':  // sad descending melody
+      tone(660, 660, 0.14, 'triangle', 0.18, 0);
+      tone(560, 560, 0.14, 'triangle', 0.18, 0.15);
+      tone(440, 440, 0.16, 'triangle', 0.18, 0.30);
+      tone(300, 210, 0.45, 'triangle', 0.20, 0.47);
+      break;
+    case 'click':
+      tone(1100, 1400, 0.06, 'sine', 0.12, 0);
+      break;
+  }
+}
+
+/* =========================================================================
+   3. STORAGE - best score + mute preference (localStorage)
+   ========================================================================= */
+function loadStore(key, fallback) {
+  try { return localStorage.getItem(key) ?? fallback; } catch (e) { return fallback; }
+}
+function saveStore(key, value) {
+  try { localStorage.setItem(key, value); } catch (e) { /* ignore */ }
+}
+
+let best = parseInt(loadStore('flappyBest', '0'), 10) || 0;
+muted = loadStore('flappyMuted', 'false') === 'true';
+
+/* =========================================================================
+   3b. SCORE RECORDS
+       "best" above IS the all-time record (stored in "flappyBest"), so it is
+       reused as-is. Only the daily and weekly records are added here, in
+       "flappyRecords". Records are only touched when a run ends.
+   ========================================================================= */
+let records = { todayBest: 0, todayDate: '', weekBest: 0, weekStart: '' };
+
+/* Local calendar date as "YYYY-MM-DD" (never UTC, so "today" matches the player). */
+function getTodayDate() {
+  const d = new Date();
+  return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+}
+
+/* Monday of the current week as "YYYY-MM-DD" (week = Monday -> Sunday). */
+function getWeekStart() {
+  const d = new Date();
+  d.setHours(0, 0, 0, 0);
+  d.setDate(d.getDate() - ((d.getDay() + 6) % 7));   // Sunday(0) -> 6 days back = Monday
+  return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+}
+
+function saveScoreRecords() {
+  saveStore('flappyRecords', JSON.stringify(records));
+}
+
+/* Reads the stored records and rolls them over when the day / week changed.
+   The all-time record is never reset. */
+function loadScoreRecords() {
+  let saved = {};
+  try { saved = JSON.parse(loadStore('flappyRecords', '{}')) || {}; } catch (e) { saved = {}; }
+
+  const today = getTodayDate();
+  const week = getWeekStart();
+  records.todayBest = parseInt(saved.todayBest, 10) || 0;
+  records.weekBest = parseInt(saved.weekBest, 10) || 0;
+
+  // New calendar day -> only today's best restarts.
+  if (saved.todayDate !== today) records.todayBest = 0;
+  // New week (new Monday) -> only this week's best restarts.
+  if (saved.weekStart !== week) records.weekBest = 0;
+
+  records.todayDate = today;
+  records.weekStart = week;
+  saveScoreRecords();
+  return records;
+}
+
+/* Called once when a run ends. A record is only raised, never lowered. */
+function updateScoreRecords(score) {
+  loadScoreRecords();                     // also handles a day/week rollover mid-session
+  const isNew = {
+    today: score > records.todayBest,
+    week: score > records.weekBest,
+    allTime: score > best
+  };
+  if (isNew.today) records.todayBest = score;
+  if (isNew.week) records.weekBest = score;
+  saveScoreRecords();
+  return isNew;
+}
+
+/* Fills every record field on screen (start screen + game over screen). */
+function displayScoreRecords(isNew) {
+  const values = { today: records.todayBest, week: records.weekBest, allTime: best };
+  document.querySelectorAll('[data-record]').forEach(el => { el.textContent = values[el.dataset.record]; });
+
+  const badge = document.getElementById('newRecord');
+  const text = !isNew ? null
+    : isNew.allTime ? 'NEW ALL-TIME BEST!'
+    : isNew.today ? "NEW TODAY'S BEST!"
+    : isNew.week ? "NEW WEEK'S BEST!"
+    : null;
+  badge.hidden = !text;
+  if (text) badge.textContent = text;
+}
+
+/* =========================================================================
+   4. GAME STATE
+   ========================================================================= */
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+
+const startScreen = document.getElementById('startScreen');
+const overScreen = document.getElementById('overScreen');
+const muteBtn = document.getElementById('muteBtn');
+
+const bird = { x: BIRD_X, y: H / 2, vel: 0, angle: 0, wing: 0 };
+let pipes = [];
+let clouds = [];
+let particles = [];
+
+let state = STATE.START;
+let score = 0;
+let speed = 2.6;               // pipe speed, grows with the score
+let groundOffset = 0;
+let shake = 0;                 // screen-shake timer
+let idleTime = 0;              // used for the gentle hover on the menu
+
+/* ---------- Screens ---------- */
+function showScreen(which) {
+  startScreen.classList.toggle('hidden', which !== 'START');
+  overScreen.classList.toggle('hidden', which !== 'GAME_OVER');
+}
+
+/* ---------- Start / reset ---------- */
+function startGame() {
+  initAudio();                 // audio is only allowed after a user gesture
+  playSound('click');
+  resetGame();
+  state = STATE.PLAYING;
+  showScreen(null);
+}
+
+/* The game also starts on the first valid game interaction (a flap gesture),
+   so the very first tap / SPACE press immediately launches a run. */
+function startAndFlap() {
+  startGame();
+  flap();
+}
+
+function resetGame() {
+  bird.y = H / 2;
+  bird.vel = 0;
+  bird.angle = 0;
+  bird.wing = 0;
+
+  score = 0;
+  speed = 2.6;
+  pipes = [];
+  particles = [];
+  groundOffset = 0;
+  shake = 0;
+
+  createClouds();
+  createPipe();                // one pipe is already waiting off-screen
+}
+
+/* ---------- Flap ---------- */
+function flap() {
+  if (state !== STATE.PLAYING) return;
+  bird.vel = FLAP_VELOCITY;
+  bird.wing = 1;               // triggers the wing animation
+  playSound('flap');
+  // little puff of "air" behind the bird
+  for (let i = 0; i < 5; i++) {
+    particles.push({
+      x: bird.x - BIRD_R, y: bird.y + rand(-6, 6),
+      vx: rand(-1.4, -0.4), vy: rand(-0.4, 0.4),
+      life: 1, size: rand(3, 7)
+    });
+  }
+}
+
+/* ---------- Pipes ---------- */
+function createPipe() {
+  // The gap shrinks a little every few points -> difficulty ramp
+  const gap = Math.max(MIN_GAP, START_GAP - Math.floor(score / 5) * 7);
+  const minY = GAP_MARGIN;
+  const maxY = H - GROUND_H - gap - GAP_MARGIN;
+  const gapY = rand(minY, maxY);   // random gap position
+
+  pipes.push({ x: W + 20, gapY, gap, scored: false });
+}
+
+function updatePipes() {
+  // Speed increases gradually with the score (capped so it stays playable)
+  speed = Math.min(5.2, 2.6 + score * 0.06);
+
+  for (const p of pipes) {
+    p.x -= speed;
+
+    // +1 point when the bird fully passes a pipe
+    if (!p.scored && p.x + PIPE_W < bird.x) {
+      p.scored = true;
+      score++;
+      playSound('point');
+    }
+  }
+
+  // Remove pipes that are off-screen
+  pipes = pipes.filter(p => p.x + PIPE_W > -10);
+
+  // The distance between pipes grows with the speed so the player always has
+  // roughly the same amount of time to react, even at high speeds.
+  const spacing = Math.max(PIPE_SPACING, speed * 46);
+
+  // Spawn the next pipe when there is enough room
+  const last = pipes[pipes.length - 1];
+  if (!last || last.x + PIPE_W + spacing < W) createPipe();
+}
+
+/* ---------- Collision ---------- */
+function circleHitsRect(cx, cy, r, rx, ry, rw, rh) {
+  // closest point on the rectangle to the circle's centre
+  const nx = clamp(cx, rx, rx + rw);
+  const ny = clamp(cy, ry, ry + rh);
+  const dx = cx - nx, dy = cy - ny;
+  return dx * dx + dy * dy < r * r;
+}
+
+function checkCollision() {
+  // Ground
+  if (bird.y + BIRD_R >= H - GROUND_H) return true;
+
+  // Pipes
+  for (const p of pipes) {
+    if (circleHitsRect(bird.x, bird.y, BIRD_R, p.x, 0, PIPE_W, p.gapY)) return true;                 // top pipe
+    if (circleHitsRect(bird.x, bird.y, BIRD_R, p.x, p.gapY + p.gap, PIPE_W, H)) return true;      // bottom pipe
+  }
+  return false;
+}
+
+/* ---------- Game over ---------- */
+function gameOver() {
+  state = STATE.GAME_OVER;
+  shake = 0.45;                       // short screen shake on the crash
+
+  playSound('crash');
+  playSound('gameover');
+
+  // Compare against the records as they were BEFORE this run is stored,
+  // otherwise a new all-time best could never be detected.
+  const isNewRecord = updateScoreRecords(score);
+
+  if (score > best) {
+    best = score;
+    saveStore('flappyBest', String(best));
+  }
+
+  document.getElementById('finalScore').textContent = score;
+  showScreen('GAME_OVER');
+  displayScoreRecords(isNewRecord);
+
+  // Send the score to the online leaderboard. Fire-and-forget on purpose: the
+  // result must never delay the game-over screen or the local records.
+  saveBestScore(score);
+}
+
+/* ---------- Update (runs at a fixed 60 steps per second) ---------- */
+function updateGame() {
+  // A modal owns the screen, so the run is frozen - otherwise the bird could
+  // crash off-screen while the player is reading the leaderboard.
+  if (modalOpen()) return;
+
+  idleTime += 1 / 60;
+
+  // Particles always animate (used for the flap "puff")
+  for (const q of particles) {
+    q.x += q.vx; q.y += q.vy; q.life -= 0.05;
+  }
+  particles = particles.filter(q => q.life > 0);
+
+  if (state !== STATE.PLAYING) {
+    // Bird slowly hovers up and down on the menus
+    bird.y = H / 2 + Math.sin(idleTime * 3) * 12;
+    bird.angle = Math.sin(idleTime * 3) * 0.08;
+    return;
+  }
+
+  // --- Physics ---
+  bird.vel += GRAVITY;                       // gravity pulls the bird down
+  if (bird.vel > MAX_FALL_SPEED) bird.vel = MAX_FALL_SPEED;
+  bird.y += bird.vel;                        // move the bird
+  if (bird.y - BIRD_R < 0) {                 // ceiling stops the bird (no death)
+    bird.y = BIRD_R;
+    bird.vel = 0;
+  }
+
+  // Rotate the bird to match its movement (tilted up when rising, down when falling)
+  const target = clamp(bird.vel / MAX_FALL_SPEED, -1, 1) * 1.3 - 0.15;
+  bird.angle += (target - bird.angle) * 0.15;
+
+  bird.wing = Math.max(0, bird.wing - 0.08); // wing flap animation
+
+  updatePipes();
+
+  if (checkCollision()) gameOver();
+}
+
+/* =========================================================================
+   6. DRAWING - all shapes are made with Canvas, no images needed
+   ========================================================================= */
+
+/* --- Scenery --- */
+function createClouds() {
+  clouds = [];
+  for (let i = 0; i < 6; i++) {
+    clouds.push({
+      x: rand(0, W), y: rand(40, H * 0.55),
+      s: rand(0.6, 1.25), v: rand(0.15, 0.5)
+    });
+  }
+}
+
+function drawCloud(c) {
+  ctx.fillStyle = 'rgba(255,255,255,0.75)';
+  ctx.beginPath();
+  ctx.arc(c.x, c.y, 22 * c.s, 0, Math.PI * 2);
+  ctx.arc(c.x + 24 * c.s, c.y + 4 * c.s, 17 * c.s, 0, Math.PI * 2);
+  ctx.arc(c.x - 25 * c.s, c.y + 6 * c.s, 15 * c.s, 0, Math.PI * 2);
+  ctx.rect(c.x - 25 * c.s, c.y + 5 * c.s, 50 * c.s, 16 * c.s);
+  ctx.fill();
+}
+
+function drawBackground() {
+  // Sky gradient
+  const sky = ctx.createLinearGradient(0, 0, 0, H);
+  sky.addColorStop(0, '#4fc3f7');
+  sky.addColorStop(0.55, '#8fd8f8');
+  sky.addColorStop(1, '#d9f4ff');
+  ctx.fillStyle = sky;
+  ctx.fillRect(0, 0, W, H);
+
+  // Sun
+  ctx.fillStyle = 'rgba(255, 244, 170, 0.95)';
+  ctx.beginPath();
+  ctx.arc(W - 78, 90, 34, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.fillStyle = 'rgba(255, 244, 170, 0.28)';
+  ctx.beginPath();
+  ctx.arc(W - 78, 90, 52, 0, Math.PI * 2);
+  ctx.fill();
+
+  // Far hills (parallax)
+  ctx.fillStyle = 'rgba(120, 190, 150, 0.55)';
+  ctx.beginPath();
+  ctx.moveTo(0, H - GROUND_H);
+  for (let x = 0; x <= W; x += 40) {
+    ctx.quadraticCurveTo(x + 20, H - GROUND_H - 60, x + 40, H - GROUND_H);
+  }
+  ctx.lineTo(W, H);
+  ctx.lineTo(0, H);
+  ctx.closePath();
+  ctx.fill();
+
+  // Clouds
+  for (const c of clouds) drawCloud(c);
+
+  // Small bushes just above the ground
+  ctx.fillStyle = 'rgba(80, 165, 110, 0.75)';
+  for (let x = -40; x < W + 40; x += 80) {
+    const off = (groundOffset * 0.4) % 80;
+    const bx = x - off;
+    ctx.beginPath();
+    ctx.arc(bx, H - GROUND_H, 22, Math.PI, 0);
+    ctx.fill();
+  }
+}
+
+function drawGround() {
+  const y = H - GROUND_H;
+  ctx.fillStyle = '#c98f4e';                     // dirt
+  ctx.fillRect(0, y, W, GROUND_H);
+  ctx.fillStyle = 'rgba(0,0,0,0.10)';            // soft shadow under the grass
+  ctx.fillRect(0, y + 16, W, 10);
+  ctx.fillStyle = '#5cc44e';                     // grass
+  ctx.fillRect(0, y, W, 18);
+
+  // Scrolling diagonal stripes to show movement
+  ctx.strokeStyle = 'rgba(255,255,255,0.18)';
+  ctx.lineWidth = 6;
+  const step = 34, off = groundOffset % step;
+  ctx.beginPath();
+  for (let x = -step; x < W + step; x += step) {
+    ctx.moveTo(x - off, H);
+    ctx.lineTo(x - off + 22, y + 18);
+  }
+  ctx.stroke();
+}
+
+/* --- Pipes --- */
+function drawPipe(px, py, pw, ph) {
+  if (ph <= 0) return;
+  ctx.fillStyle = '#4caf50';                     // body
+  ctx.fillRect(px, py, pw, ph);
+  ctx.fillStyle = 'rgba(255,255,255,0.22)';     // highlight
+  ctx.fillRect(px + 6, py, 12, ph);
+  ctx.fillStyle = 'rgba(0,0,0,0.22)';           // shade
+  ctx.fillRect(px + pw - 12, py, 12, ph);
+}
+
+function drawPipeCap(px, py, pw, capH) {
+  ctx.fillStyle = '#2e7d32';
+  ctx.fillRect(px - 5, py, pw + 10, capH);
+  ctx.fillStyle = 'rgba(255,255,255,0.18)';
+  ctx.fillRect(px + 3, py, 12, capH);
+  ctx.fillStyle = 'rgba(0,0,0,0.20)';
+  ctx.fillRect(px + pw - 9, py, 12, capH);
+}
+
+function drawPipes() {
+  const CAP = 26;
+  for (const p of pipes) {
+    // top pipe: body + cap that points down towards the gap
+    drawPipe(p.x, 0, PIPE_W, p.gapY - CAP);
+    drawPipeCap(p.x, p.gapY - CAP, PIPE_W, CAP);
+    // bottom pipe
+    const by = p.gapY + p.gap;
+    drawPipeCap(p.x, by, PIPE_W, CAP);
+    drawPipe(p.x, by + CAP, PIPE_W, H - GROUND_H - by - CAP);
+  }
+}
+
+/* --- Bird --- */
+function drawBird() {
+  ctx.save();
+  ctx.translate(bird.x, bird.y);
+  ctx.rotate(bird.angle);
+
+  // tail
+  ctx.fillStyle = '#f5a623';
+  ctx.beginPath();
+  ctx.moveTo(-BIRD_R + 2, -2);
+  ctx.lineTo(-BIRD_R - 12, -9);
+  ctx.lineTo(-BIRD_R - 12, 8);
+  ctx.closePath();
+  ctx.fill();
+
+  // body
+  const g = ctx.createLinearGradient(0, -BIRD_R, 0, BIRD_R);
+  g.addColorStop(0, '#ffe066');
+  g.addColorStop(1, '#f6a623');
+  ctx.fillStyle = g;
+  ctx.beginPath();
+  ctx.ellipse(0, 0, BIRD_R + 3, BIRD_R, 0, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.strokeStyle = 'rgba(0,0,0,0.20)';
+  ctx.lineWidth = 2;
+  ctx.stroke();
+
+  // wing (moves up and down when flapping)
+  const wy = 3 - bird.wing * 12;
+  ctx.fillStyle = '#fff3c4';
+  ctx.beginPath();
+  ctx.ellipse(-3, wy, 9, 6, -0.5, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.strokeStyle = 'rgba(0,0,0,0.18)';
+  ctx.lineWidth = 1.5;
+  ctx.stroke();
+
+  // eye
+  ctx.fillStyle = '#fff';
+  ctx.beginPath();
+  ctx.arc(6, -6, 6, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.fillStyle = '#22303f';
+  ctx.beginPath();
+  ctx.arc(8, -6, 2.6, 0, Math.PI * 2);
+  ctx.fill();
+
+  // beak
+  ctx.fillStyle = '#ff7043';
+  ctx.beginPath();
+  ctx.moveTo(12, -1);
+  ctx.lineTo(26, 3);
+  ctx.lineTo(12, 8);
+  ctx.closePath();
+  ctx.fill();
+
+  ctx.restore();
+}
+
+function drawParticles() {
+  ctx.fillStyle = 'rgba(255,255,255,0.75)';
+  for (const q of particles) {
+    ctx.globalAlpha = q.life;
+    ctx.beginPath();
+    ctx.arc(q.x, q.y, q.size * q.life, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  ctx.globalAlpha = 1;
+}
+
+/* --- Score --- */
+function drawScore() {
+  if (state === STATE.START) return;
+  ctx.save();
+  ctx.font = 'bold 46px "Trebuchet MS", sans-serif';
+  ctx.textAlign = 'center';
+  ctx.lineWidth = 7;
+  ctx.strokeStyle = 'rgba(0,0,0,0.45)';
+  ctx.strokeText(score, W / 2, 74);
+  ctx.fillStyle = '#fff';
+  ctx.fillText(score, W / 2, 74);
+  ctx.restore();
+}
+
+/* --- Master draw function --- */
+function drawGame() {
+  ctx.clearRect(0, 0, W, H);
+
+  // slight shake on crash
+  if (shake > 0) {
+    shake -= 1 / 60;
+    ctx.save();
+    ctx.translate(rand(-5, 5), rand(-5, 5));
+  }
+
+  drawBackground();
+  drawPipes();
+  drawGround();
+  drawParticles();
+  drawBird();
+  drawScore();
+
+  if (shake > 0) ctx.restore();
+
+  // "Press SPACE / CLICK to Fly" reminder while the first pipe approaches
+  if (state === STATE.PLAYING && score === 0) {
+    ctx.save();
+    ctx.globalAlpha = 0.55 + Math.sin(idleTime * 4) * 0.2;
+    ctx.font = 'bold 22px "Trebuchet MS", sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillStyle = '#0f2b46';
+    ctx.fillText('SPACE / CLICK to Fly', W / 2, H - GROUND_H - 34);
+    ctx.restore();
+  }
+}
+
+/* =========================================================================
+   7. INPUT + GAME LOOP
+   ========================================================================= */
+
+/* --- Canvas scaling: keeps the logical 480x720 size on any screen --- */
+function resize() {
+  const dpr = window.devicePixelRatio || 1;
+  const rect = canvas.getBoundingClientRect();
+  canvas.width = Math.max(1, Math.round(rect.width * dpr));
+  canvas.height = Math.max(1, Math.round(rect.height * dpr));
+  // Scale the drawing so all game coordinates stay the same on every device
+  ctx.setTransform(canvas.width / W, 0, 0, canvas.height / H, 0, 0);
+}
+window.addEventListener('resize', resize);
+
+// Keeps the canvas crisp when the stage size changes (e.g. phone rotation)
+if (window.ResizeObserver) new window.ResizeObserver(resize).observe(canvas);
+
+/* --- Buttons --- */
+document.getElementById('startBtn').addEventListener('click', startGame);
+document.getElementById('restartBtn').addEventListener('click', startGame);
+
+muteBtn.textContent = muted ? '🔇' : '🔊';
+muteBtn.addEventListener('click', (e) => {
+  e.stopPropagation();          // never counts as a flap
+  initAudio();
+  muted = !muted;
+  saveStore('flappyMuted', String(muted));
+  muteBtn.textContent = muted ? '🔇' : '🔊';
+  if (!muted) playSound('click');
+});
+
+/* --- Flap controls: keyboard, mouse and touch ---
+   The listeners sit on the CANVAS, not on the whole stage, so that pressing the
+   buttons on mobile still works (a preventDefault() on the stage would cancel
+   the browser's synthesised click and the buttons would never fire). */
+function onFlapInput(e) {
+  initAudio();
+  flap();
+}
+
+canvas.addEventListener('mousedown', onFlapInput);
+// passive:false + preventDefault stops the "ghost click" that would flap twice
+canvas.addEventListener('touchstart', (e) => { e.preventDefault(); onFlapInput(e); }, { passive: false });
+
+// The start screen itself is also a valid first interaction: tapping anywhere
+// on it (but not on a button) starts the game and flaps.
+function onStartScreenPointer(e) {
+  if (e.target && e.target.closest && e.target.closest('button')) return;
+  e.preventDefault();
+  startAndFlap();
+}
+startScreen.addEventListener('mousedown', onStartScreenPointer);
+startScreen.addEventListener('touchstart', onStartScreenPointer, { passive: false });
+
+document.addEventListener('keydown', (e) => {
+  const key = e.key;
+  if (e.repeat) return;                         // ignore auto-repeat while holding
+
+  // While a modal is open it owns the keyboard (the username input handles its
+  // own keys), so Space / Enter must not start a run behind it.
+  if (modalOpen() && (key === ' ' || key === 'Spacebar' || key === 'ArrowUp' || key === 'Enter')) return;
+
+  if (key === ' ' || key === 'Spacebar' || key === 'ArrowUp') {
+    e.preventDefault();                         // stops page scrolling AND the
+    if (state === STATE.GAME_OVER) startGame(); // default "press the focused button"
+    else if (state === STATE.START) startAndFlap();
+    else { initAudio(); flap(); }
+    return;
+  }
+
+  if (key === 'Enter' && state !== STATE.PLAYING) startGame();
+
+  if (key === 'm' || key === 'M') muteBtn.click();
+});
+
+/* --- Fixed-timestep loop: identical physics on 60Hz and 144Hz screens --- */
+let lastTime = 0, accumulator = 0;
+const STEP = 1000 / 60;
+
+function loop(now) {
+  requestAnimationFrame(loop);
+
+  if (!lastTime) lastTime = now;
+  let dt = now - lastTime;
+  lastTime = now;
+  if (dt > 250) dt = STEP;                    // ignore big jumps (tab switch)
+
+  accumulator += dt;
+  while (accumulator >= STEP) {
+    updateGame();
+    accumulator -= STEP;
+  }
+  drawGame();
+}
+
+/* =========================================================================
+   8. ONLINE LEADERBOARD (Firebase Authentication + Cloud Firestore)
+
+      The game itself never depends on this section: every Firebase call is
+      guarded, so if the SDK cannot be downloaded, the user is offline or the
+      project is misconfigured, the game keeps running on its local records
+      and only the leaderboard becomes unavailable.
+
+      NOTE: these are public Firebase Web App credentials. They are safe to
+      ship in a browser - access is controlled by the Firestore security rules
+      in "firestore.rules", not by hiding this config.
+   ========================================================================= */
+
+/* Firebase Web App configuration */
+const firebaseConfig = {
+  apiKey: "AIzaSyDxfbilq9R7sJZoUz3eYKrko7uwDgVO-WA",
+  authDomain: "flappy-bird-online-db158.firebaseapp.com",
+  projectId: "flappy-bird-online-db158",
+  storageBucket: "flappy-bird-online-db158.firebasestorage.app",
+  messagingSenderId: "220315596376",
+  appId: "1:220315596376:web:66a582e95bcac119b37c2d"
+  // measurementId is intentionally unused: Analytics is not part of this project.
+};
+
+const SDK_BASE = 'https://www.gstatic.com/firebasejs/12.19.0/';
+const PLAYERS = 'players';                       // Firestore collection: players/{uid}
+const NAME_MIN = 3, NAME_MAX = 20;
+
+/* Everything online lives here, so the rest of the game stays untouched. */
+const online = {
+  status: 'idle',      // idle | loading | ready | offline | error
+  uid: null,
+  username: '',
+  best: 0,             // online (Firestore) best score
+  pendingScore: null,  // a score finished before sign-in was ready
+  app: null, auth: null, db: null, fs: null, authApi: null,
+  panelOpen: false
+};
+
+const lbBtn = document.getElementById('lbBtn');
+const leaderboard = document.getElementById('leaderboard');
+
+/* True while a modal owns the screen. Deliberately DOM-free so the game loop
+   and the key handler can ask the question cheaply. */
+let nameModalVisible = false;
+function modalOpen() { return online.panelOpen || nameModalVisible; }
+
+/* ---------- SDK loading (lazy, with a timeout so the game never waits) ---------- */
+function withTimeout(promise, ms, label) {
+  return Promise.race([
+    promise,
+    new Promise((_, reject) => setTimeout(() => reject(new Error(label + ' timed out')), ms))
+  ]);
+}
+
+/* Downloads the three modules we need. Auth + Firestore only - no Analytics. */
+async function loadFirebaseSdk() {
+  return withTimeout(Promise.all([
+    import(SDK_BASE + 'firebase-app.js'),
+    import(SDK_BASE + 'firebase-auth.js'),
+    import(SDK_BASE + 'firebase-firestore.js')
+  ]), 10000, 'Firebase download');
+}
+
+async function initializeFirebase() {
+  if (online.app) return true;
+  try {
+    const [appMod, authMod, fsMod] = await loadFirebaseSdk();
+    online.app = appMod.initializeApp(firebaseConfig);
+    online.authApi = authMod;
+    online.fs = fsMod;
+    online.auth = authMod.getAuth(online.app);
+    online.db = fsMod.getFirestore(online.app);
+    return true;
+  } catch (e) {
+    console.warn('Online leaderboard unavailable:', e && e.message);
+    online.status = 'offline';
+    return false;
+  }
+}
+
+/* ---------- Authentication (anonymous - no email, no password) ---------- */
+async function authenticateUser() {
+  const cred = await online.authApi.signInAnonymously(online.auth);
+  online.uid = cred.user.uid;
+  return online.uid;
+}
+
+/* ---------- Username helpers ---------- */
+/* Length is counted in code points, not UTF-16 units, so an emoji counts as one
+   character here exactly as it does in the Firestore rules. */
+function sanitizeUsername(raw) {
+  return Array.from(String(raw == null ? '' : raw)
+    .replace(/[\u0000-\u001F\u007F<>]/g, '')   // strip control chars and angle brackets
+    .replace(/\s+/g, ' ')                       // collapse repeated spaces
+    .trim())                                    // trim leading / trailing spaces
+    .slice(0, NAME_MAX).join('');
+}
+
+function validateUsername(raw) {
+  const name = sanitizeUsername(raw);
+  if (Array.from(name).length < NAME_MIN) {
+    return { ok: false, error: 'Username must be at least ' + NAME_MIN + ' characters' };
+  }
+  return { ok: true, name };
+}
+
+/* ---------- Player profile: players/{uid} ---------- */
+async function loadPlayerProfile() {
+  const { doc, getDoc } = online.fs;
+  const snap = await getDoc(doc(online.db, PLAYERS, online.uid));
+  if (snap.exists()) {
+    const data = snap.data() || {};
+    online.username = sanitizeUsername(data.username) || 'Player';
+    online.best = Number(data.bestScore) || 0;
+    return data;                                   // profile exists
+  }
+  return null;                                     // first time -> ask for a name
+}
+
+/* Creates the profile only if it does not exist yet. A transaction is used so a
+   second browser tab cannot overwrite a profile (and its best score) that was
+   created a moment ago. */
+async function createPlayerProfile(name) {
+  const { doc, runTransaction, serverTimestamp } = online.fs;
+  const ref = doc(online.db, PLAYERS, online.uid);
+  let created = false;
+  await runTransaction(online.db, async (tx) => {
+    const snap = await tx.get(ref);
+    if (snap.exists()) return;                  // already created - leave it alone
+    tx.set(ref, {
+      uid: online.uid,
+      username: name,
+      bestScore: 0,
+      bestScoreAt: serverTimestamp(),
+      createdAt: serverTimestamp(),
+      updatedAt: serverTimestamp()
+    });
+    created = true;
+  });
+  if (created) {
+    online.username = name;
+    online.best = 0;
+  }
+}
+
+/* ---------- Score submission (only ever called when a run ends) ---------- */
+/* Writes only when the new score beats the stored online best, so a worse run
+   never overwrites a better one. */
+async function saveBestScore(score) {
+  if (!online.db || !online.uid) {
+    // Sign-in has not finished yet - hold on to the score instead of losing it.
+    online.pendingScore = Math.max(online.pendingScore || 0, score);
+    return false;
+  }
+  try {
+    const { doc, getDoc, updateDoc, serverTimestamp } = online.fs;
+    const ref = doc(online.db, PLAYERS, online.uid);
+    const snap = await getDoc(ref);
+    const current = snap.exists() ? Number(snap.data().bestScore) || 0 : 0;
+
+    if (score <= current) return false;            // keep the higher score
+    if (!snap.exists()) {                          // profile vanished -> recreate it
+      await createPlayerProfile(online.username || 'Player');
+    }
+    await updateDoc(ref, {
+      bestScore: score,
+      bestScoreAt: serverTimestamp(),
+      updatedAt: serverTimestamp()
+    });
+    online.best = score;
+    if (online.panelOpen) refreshLeaderboard();     // repaint if the player is looking at it
+    return true;
+  } catch (e) {
+    console.warn('Score not submitted:', e && e.message);
+    return false;
+  }
+}
+
+/* ---------- Leaderboard ---------- */
+/* Top 10 straight from Firestore: ordered and limited by the database,
+   never sorted in JavaScript. */
+async function loadLeaderboard() {
+  if (!online.db) return null;
+  const { collection, query, orderBy, limit, getDocs } = online.fs;
+  const snap = await getDocs(query(collection(online.db, PLAYERS), orderBy('bestScore', 'desc'), limit(10)));
+  return snap.docs.map(d => {
+    const data = d.data() || {};
+    return { uid: d.id, name: sanitizeUsername(data.username) || 'Player', score: Number(data.bestScore) || 0 };
+  });
+}
+
+/* rank = (players with a strictly higher bestScore) + 1, so tied players share
+   a rank. Done with a server-side COUNT so no player list is downloaded. */
+async function calculatePlayerRank(myScore) {
+  const { collection, query, where, getCountFromServer } = online.fs;
+  const snap = await getCountFromServer(query(collection(online.db, PLAYERS), where('bestScore', '>', myScore)));
+  return snap.data().count + 1;
+}
+
+/* ---------- Leaderboard rendering ---------- */
+function displayLeaderboard(rows, rank) {
+  const statusEl = document.getElementById('lbStatus');
+  const tableEl = document.getElementById('lbTable');
+  const rowsEl = document.getElementById('lbRows');
+  const meEl = document.getElementById('lbMe');
+  const meBody = document.getElementById('lbMeBody');
+
+  document.getElementById('lbOnline').textContent =
+    'ONLINE BEST: ' + (online.uid ? online.best : '—');
+
+  if (!rows) {                                    // failed to load
+    statusEl.textContent = 'Unable to load leaderboard. Please try again.';
+    statusEl.classList.remove('hidden');
+    tableEl.hidden = true;
+    meEl.hidden = true;
+    return;
+  }
+
+  if (!rows.length) {
+    statusEl.textContent = 'No scores yet. Be the first!';
+    tableEl.hidden = true;
+    meEl.hidden = true;
+    return;
+  }
+
+  statusEl.classList.add('hidden');
+  tableEl.hidden = false;
+
+  const myIndex = rows.findIndex(r => r.uid === online.uid);
+  rowsEl.textContent = '';
+
+  // Equal scores share a rank (1, 2, 3, 3, 5 ...), which is exactly what
+  // calculatePlayerRank() returns, so the list and "your position" can never
+  // disagree. No extra query and no composite index needed.
+  const ranks = [];
+  let prevScore = null;
+  rows.forEach((r, i) => {
+    ranks.push(i === 0 || r.score !== prevScore ? i + 1 : ranks[i - 1]);
+    prevScore = r.score;
+    rowsEl.appendChild(buildLbRow([ranks[i], r.name, r.score],
+      'lb-row' + (r.uid === online.uid ? ' me' : '') + (i === 0 ? ' gold' : '')));
+  });
+
+  meEl.hidden = false;
+  meBody.textContent = '';
+  const myRank = rank != null ? rank : (myIndex >= 0 ? ranks[myIndex] : null);
+
+  if (myIndex >= 0) {                               // already visible in the list
+    const line = document.createElement('span');
+    line.className = 'lb-me-inline';
+    line.append('Your Position: ');
+    const b = document.createElement('b');
+    b.textContent = myRank == null ? '—' : '#' + myRank;
+    line.appendChild(b);
+    meBody.appendChild(line);
+  } else {                                          // outside the top 10
+    meBody.appendChild(buildLbRow(
+      [myRank == null ? '—' : '#' + myRank, online.username + ' (You)', online.best], 'lb-row me'));
+  }
+}
+
+/* Builds one "<rank> <name> <score>" row. Every value goes in through
+   textContent, so a username can never inject markup. */
+function buildLbRow(values, className) {
+  const row = document.createElement('div');
+  row.className = className;
+  values.forEach(v => {
+    const cell = document.createElement('span');
+    cell.textContent = v;
+    row.appendChild(cell);
+  });
+  return row;
+}
+
+/* Re-reads the leaderboard and repaints it, keeping the scroll position. The
+   list and the rank are fetched independently: if only the rank query fails the
+   top 10 still shows, with the rank shown as a dash. */
+async function refreshLeaderboard() {
+  if (!online.db) return;
+  const table = document.getElementById('lbTable');
+  const keepScroll = table.scrollTop;
+  let rows = null, rank = null;
+  try {
+    rows = await loadLeaderboard();
+  } catch (e) {
+    console.warn('Leaderboard failed:', e && e.message);
+  }
+  if (rows) {
+    try {
+      rank = await calculatePlayerRank(online.best);
+    } catch (e) {
+      console.warn('Rank unavailable:', e && e.message);
+    }
+  }
+  displayLeaderboard(rows, rank);
+  table.scrollTop = keepScroll;
+}
+
+async function openLeaderboard() {
+  leaderboard.classList.remove('hidden');
+  online.panelOpen = true;
+  document.getElementById('lbStatus').textContent = 'Loading leaderboard...';
+  document.getElementById('lbStatus').classList.remove('hidden');
+  document.getElementById('lbTable').hidden = true;
+  document.getElementById('lbMe').hidden = true;
+
+  if (!online.db) {
+    online.status = 'offline';
+    document.getElementById('lbStatus').textContent =
+      'Leaderboard unavailable. Check your internet connection.';
+    return;
+  }
+  await refreshLeaderboard();
+}
+
+function closeLeaderboard() {
+  leaderboard.classList.add('hidden');
+  online.panelOpen = false;
+}
+
+/* ---------- Username setup screen ---------- */
+function showNameSetup() {
+  return new Promise(resolve => {
+    const modal = document.getElementById('nameModal');
+    const input = document.getElementById('nameInput');
+    const error = document.getElementById('nameError');
+    modal.classList.remove('hidden');
+    nameModalVisible = true;
+    input.value = '';
+    error.hidden = true;
+
+    // Always tears the listeners down, whichever way the modal is left.
+    const finish = () => {
+      modal.classList.add('hidden');
+      nameModalVisible = false;
+      input.removeEventListener('keydown', onKey);
+      document.getElementById('namePlay').removeEventListener('click', submit);
+    };
+    const submit = async () => {
+      const check = validateUsername(input.value);
+      if (!check.ok) { error.textContent = check.error; error.hidden = false; return; }
+      error.hidden = true;
+      try {
+        await createPlayerProfile(check.name);      // stored in Firestore under the UID
+        saveStore('flappyName', check.name);        // cached locally for offline display
+        finish();
+        resolve(check.name);
+      } catch (e) {
+        console.warn('Could not save the username:', e && e.message);
+        error.textContent = 'Could not save your name. Check your connection.';
+        error.hidden = false;
+      }
+    };
+    const onKey = (e) => {
+      // stopPropagation matters: the modal consumes the keys it handles, so the
+      // global handler can never start a run behind it. Relying on the visible
+      // flag alone is not enough - the browser can run this async continuation
+      // before the event reaches the document handler.
+      if (e.key === 'Enter') { e.preventDefault(); e.stopPropagation(); submit(); }
+      else if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); finish(); resolve(''); }
+    };
+    input.addEventListener('keydown', onKey);
+    document.getElementById('namePlay').addEventListener('click', submit);
+    input.focus();
+  });
+}
+
+/* ---------- Boot the online part (never blocks the game) ---------- */
+async function initOnline() {
+  const cachedName = sanitizeUsername(loadStore('flappyName', ''));
+  if (cachedName) { online.username = cachedName; saveStore('flappyName', cachedName); }
+
+  if (!navigator.onLine) { online.status = 'offline'; return; }
+  if (!await initializeFirebase()) return;
+
+  online.status = 'loading';
+  try {
+    await authenticateUser();
+    const profile = await loadPlayerProfile();
+    if (profile) {
+      saveStore('flappyName', online.username);
+      online.status = 'ready';
+    } else {
+      online.status = 'ready';
+      await showNameSetup();                       // first visit only
+      if (online.username) await loadPlayerProfile();   // another tab may have won the race
+    }
+    if (online.pendingScore != null) {              // submit a score from before sign-in
+      const held = online.pendingScore;
+      online.pendingScore = null;
+      await saveBestScore(held);
+    }
+  } catch (e) {
+    console.warn('Sign-in failed:', e && e.code || e && e.message);
+    online.status = 'error';
+  }
+}
+
+lbBtn.addEventListener('click', openLeaderboard);
+document.getElementById('lbClose').addEventListener('click', closeLeaderboard);
+
+/* --- Go --- */
+loadScoreRecords();
+displayScoreRecords();
+resetGame();
+showScreen('START');
+resize();
+requestAnimationFrame(loop);
+initOnline();                        // online leaderboard loads in the background
+</script>
+</body>
+</html>

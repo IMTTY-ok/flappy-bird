@@ -1,0 +1,78 @@
+rules_version = '2';
+
+// Firestore security rules for the Flappy Bird global leaderboard.
+//
+// Data model - players/{uid}
+//   uid         string   must equal the document id
+//   username    string   3-20 characters, no control characters
+//   bestScore   int      >= 0, may only ever go up
+//   bestScoreAt timestamp when bestScore was last raised
+//   createdAt   timestamp
+//   updatedAt   timestamp
+//
+// Deploy with:  firebase deploy --only firestore:rules
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function isOwner(uid) {
+      return signedIn() && request.auth.uid == uid;
+    }
+
+    function validUsername() {
+      let name = request.resource.data.username;
+      // 3-20 characters, and no control characters (the client strips them too).
+      // The negated class keeps letters outside ASCII - emoji included - legal.
+      return name is string
+        && name.size() >= 3
+        && name.size() <= 20
+        && name.matches('^[^\\x00-\\x1F\\x7F]+$');
+    }
+
+    function validScore() {
+      let s = request.resource.data.bestScore;
+      return s is int && s >= 0 && s <= 1000000;
+    }
+
+    function validTimestamps() {
+      let d = request.resource.data;
+      return d.createdAt is timestamp
+        && d.updatedAt is timestamp
+        && d.bestScoreAt is timestamp;
+    }
+
+    match /players/{uid} {
+
+      // Any signed-in player may read the leaderboard.
+      allow read: if signedIn();
+
+      // A player creates exactly their own profile.
+      allow create: if isOwner(uid)
+        && request.resource.data.uid == uid
+        && validUsername()
+        && validScore()
+        && validTimestamps()
+        && request.resource.data.keys().hasOnly([
+             'uid', 'username', 'bestScore', 'bestScoreAt', 'createdAt', 'updatedAt'
+           ]);
+
+      // Updates are limited to raising your own best score. The uid and the
+      // creation date cannot be touched, and the score can never be lowered,
+      // so a bad run cannot wipe out a good one.
+      allow update: if isOwner(uid)
+        && request.resource.data.uid == uid
+        && request.resource.data.uid == resource.data.uid
+        && request.resource.data.createdAt == resource.data.createdAt
+        && validUsername()
+        && validScore()
+        && validTimestamps()
+        && request.resource.data.bestScore >= resource.data.bestScore;
+
+      // Deleting a profile would erase a leaderboard entry, so it is denied.
+      allow delete: if false;
+    }
+  }
+}

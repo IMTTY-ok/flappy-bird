@@ -1,0 +1,11 @@
+{
+  "name": "flappy-bird",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Flappy Bird - single file HTML5 Canvas game",
+  "dependencies": {
+    "@firebase/app": "^0.16.2",
+    "@firebase/auth": "^1.13.6",
+    "@firebase/firestore": "^4.17.2"
+  }
+}
