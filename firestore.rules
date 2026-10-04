@@ -1,14 +1,32 @@
 rules_version = '2';
 
-// Firestore security rules for the Flappy Bird global leaderboard.
+// Firestore security rules for Flappy Bird.
 //
-// Data model - players/{uid}
-//   uid         string   must equal the document id
-//   username    string   3-20 characters, no control characters
-//   bestScore   int      >= 0, may only ever go up
-//   bestScoreAt timestamp when bestScore was last raised
-//   createdAt   timestamp
-//   updatedAt   timestamp
+// Data model
+//   players/{uid}                     one row per player, drives the leaderboard
+//     uid            string   must equal the document id
+//     bestScore      int      >= 0, may only ever go up
+//     bestScoreName  string   2-20 characters, no control characters
+//     bestScoreAt    timestamp
+//     createdAt      timestamp
+//     updatedAt      timestamp
+//
+//   gameSessions/{sessionId}          one row per run, keeps the game history
+//     uid         string   must equal request.auth.uid
+//     playerName  string   2-20 characters, no control characters
+//     startedAt   timestamp
+//     endedAt     timestamp   only present once the run is over
+//     finalScore  int      0 while playing, the score once completed
+//     completed   bool     false while playing, true once the run ended
+//
+// There is no `allow read, write: if true` anywhere: every path below is tied to
+// the signed-in user, so one player can never touch another player's document.
+//
+// NOTE ON SCOPE: the score is calculated in the browser, so this is not
+// cheat-proof - a determined player can edit client-side JavaScript. What the
+// rules do guarantee is that a player cannot edit anyone else's data and cannot
+// lower their own stored best. Stronger validation (Cloud Functions re-running
+// the game server-side) can be layered on top of this structure later.
 //
 // Deploy with:  firebase deploy --only firestore:rules
 service cloud.firestore {
@@ -22,56 +40,98 @@ service cloud.firestore {
       return signedIn() && request.auth.uid == uid;
     }
 
-    function validUsername() {
-      let name = request.resource.data.username;
-      // 3-20 characters, and no control characters (the client strips them too).
-      // The negated class keeps letters outside ASCII - emoji included - legal.
+    // 2-20 characters and no control characters. The client strips control
+    // characters and angle brackets too. The negated class keeps every letter
+    // outside ASCII - emoji included - legal.
+    function validName(name) {
       return name is string
-        && name.size() >= 3
+        && name.size() >= 2
         && name.size() <= 20
         && name.matches('^[^\\x00-\\x1F\\x7F]+$');
     }
 
-    function validScore() {
-      let s = request.resource.data.bestScore;
-      return s is int && s >= 0 && s <= 1000000;
+    function validScore(score) {
+      return score is int && score >= 0 && score <= 1000000;
     }
 
-    function validTimestamps() {
-      let d = request.resource.data;
-      return d.createdAt is timestamp
-        && d.updatedAt is timestamp
-        && d.bestScoreAt is timestamp;
-    }
-
+    /* ---------------------------------------------------------------- players */
     match /players/{uid} {
 
       // Any signed-in player may read the leaderboard.
       allow read: if signedIn();
 
-      // A player creates exactly their own profile.
+      // A player creates only their own row, and only through their first
+      // personal best - there is no empty placeholder row.
       allow create: if isOwner(uid)
-        && request.resource.data.uid == uid
-        && validUsername()
-        && validScore()
-        && validTimestamps()
         && request.resource.data.keys().hasOnly([
-             'uid', 'username', 'bestScore', 'bestScoreAt', 'createdAt', 'updatedAt'
-           ]);
+             'uid', 'bestScore', 'bestScoreName', 'bestScoreAt', 'createdAt', 'updatedAt'
+           ])
+        && request.resource.data.uid == uid
+        && validScore(request.resource.data.bestScore)
+        && validName(request.resource.data.bestScoreName)
+        && request.resource.data.createdAt is timestamp
+        && request.resource.data.bestScoreAt is timestamp
+        && request.resource.data.updatedAt is timestamp;
 
-      // Updates are limited to raising your own best score. The uid and the
-      // creation date cannot be touched, and the score can never be lowered,
-      // so a bad run cannot wipe out a good one.
+      // Updates may only raise the player's own best score. The uid and the
+      // creation date cannot be changed, and the score can never be lowered, so a
+      // bad run cannot wipe out a good one. bestScoreName moves together with
+      // bestScore, which keeps the leaderboard name tied to the real score.
       allow update: if isOwner(uid)
+        && request.resource.data.keys().hasOnly([
+             'uid', 'bestScore', 'bestScoreName', 'bestScoreAt', 'createdAt', 'updatedAt'
+           ])
         && request.resource.data.uid == uid
         && request.resource.data.uid == resource.data.uid
         && request.resource.data.createdAt == resource.data.createdAt
-        && validUsername()
-        && validScore()
-        && validTimestamps()
+        && validScore(request.resource.data.bestScore)
+        && validName(request.resource.data.bestScoreName)
+        && request.resource.data.bestScoreAt is timestamp
+        && request.resource.data.updatedAt is timestamp
         && request.resource.data.bestScore >= resource.data.bestScore;
 
-      // Deleting a profile would erase a leaderboard entry, so it is denied.
+      // Removing a row would erase a leaderboard entry, so it is denied.
+      allow delete: if false;
+    }
+
+    /* ----------------------------------------------------------- gameSessions */
+    match /gameSessions/{sessionId} {
+
+      // A player may read their own session history and nobody else's.
+      allow read: if signedIn() && resource.data.uid == request.auth.uid;
+
+      // A session is opened the moment a run starts: zero score, not completed.
+      allow create: if signedIn()
+        && request.resource.data.keys().hasOnly([
+             'uid', 'playerName', 'startedAt', 'finalScore', 'completed'
+           ])
+        && request.resource.data.uid == request.auth.uid
+        && validName(request.resource.data.playerName)
+        && request.resource.data.startedAt is timestamp
+        && request.resource.data.finalScore == 0
+        && request.resource.data.completed == false;
+
+      // Closing a session is the only update: the name and the start time are
+      // frozen, the final score is written, and a closed session can never be
+      // re-opened or have its score edited afterwards.
+      allow update: if signedIn()
+        && resource.data.uid == request.auth.uid
+        && request.resource.data.keys().hasOnly([
+             'uid', 'playerName', 'startedAt', 'endedAt', 'finalScore', 'completed'
+           ])
+        && request.resource.data.uid == resource.data.uid
+        && request.resource.data.playerName == resource.data.playerName
+        && request.resource.data.startedAt == resource.data.startedAt
+        && request.resource.data.endedAt is timestamp
+        && validScore(request.resource.data.finalScore)
+        && request.resource.data.completed == true
+        && (
+             resource.data.completed == true
+               ? request.resource.data.finalScore == resource.data.finalScore
+               : true
+           );
+
+      // The game history is the point of this collection, so nothing is deleted.
       allow delete: if false;
     }
   }

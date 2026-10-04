@@ -207,6 +207,16 @@
   }
   .name-input:focus { outline: none; border-color: #ffe14d; }
   .name-error { color: #ff9d9d; font-size: .95em; }
+
+  /* Online summary on the game-over screen */
+  .global-line {
+    display: flex;
+    justify-content: center;
+    gap: 1.1em;
+    font-size: 1.05em;
+    font-weight: bold;
+  }
+  .global-line b { color: #ffe14d; }
 </style>
 </head>
 
@@ -245,8 +255,15 @@
       <div><b data-record="today">0</b><span>TODAY'S BEST</span></div>
       <div><b data-record="week">0</b><span>WEEK'S BEST</span></div>
     </div>
+    <p class="hint" id="overPlayer">PLAYER: —</p>
+    <div class="global-line">
+      <span>🏆 GLOBAL BEST: <b id="overGlobalBest">—</b></span>
+      <span>🌎 GLOBAL RANK: <b id="overGlobalRank">—</b></span>
+    </div>
+    <p class="hint-keys new-record" id="newOnlineRecord" hidden>🎉 NEW PERSONAL BEST!</p>
+    <p class="hint-keys new-record" id="topTenBadge" hidden>🏆 YOU ARE IN THE TOP 10!</p>
     <p class="hint-keys new-record" id="newRecord" hidden>NEW ALL-TIME BEST!</p>
-    <button class="big-btn" id="restartBtn">Restart</button>
+    <button class="big-btn" id="restartBtn">PLAY AGAIN</button>
     <p class="hint-keys">Press ENTER or SPACE to play again</p>
   </div>
 
@@ -260,16 +277,16 @@
       <div id="lbRows"></div>
     </div>
     <div class="lb-me" id="lbMe" hidden>
-      <span class="lb-me-label">YOUR POSITION</span>
+      <span class="lb-me-label">YOUR BEST</span>
       <div id="lbMeBody"></div>
     </div>
     <button class="big-btn" id="lbClose">CLOSE</button>
   </div>
 
-  <!-- USERNAME SETUP (first run only) -->
+  <!-- USERNAME SETUP (asked before every run) -->
   <div class="overlay hidden" id="nameModal">
-    <h1>ENTER YOUR USERNAME</h1>
-    <p class="hint">3 to 20 characters</p>
+    <h1>ENTER YOUR NAME</h1>
+    <p class="hint">2 to 20 characters</p>
     <input class="name-input" id="nameInput" type="text" maxlength="20" autocomplete="off" spellcheck="false" placeholder="Your Name" />
     <p class="hint name-error" id="nameError" hidden></p>
     <button class="big-btn" id="namePlay">PLAY</button>
@@ -515,7 +532,9 @@ function showScreen(which) {
 }
 
 /* ---------- Start / reset ---------- */
-function startGame() {
+/* The actual run. Everything above this line (name prompt, game session) happens
+   in startGame(); this function is the untouched gameplay entry point. */
+function beginRun() {
   initAudio();                 // audio is only allowed after a user gesture
   playSound('click');
   resetGame();
@@ -523,11 +542,34 @@ function startGame() {
   showScreen(null);
 }
 
+/* Starts a run, but only through the full online flow:
+      ask for a name -> create a game session -> begin the run
+   A run is never started before the player has entered a name. If Firebase is
+   unavailable the session is skipped and the game still starts normally. */
+async function startGame(options) {
+  if (startPending || modalOpen()) return;         // one name prompt at a time
+  startPending = true;
+  try {
+    const name = await showNameSetup();             // resolves only on a valid name
+    if (!name) return;
+
+    online.playerName = name;
+    saveStore('flappyName', name);                  // last name, for offline display
+
+    await waitForAuth();                            // best effort, never blocks long
+    await createGameSession(name);                  // skipped when offline
+
+    beginRun();
+    if (options && options.flap) flap();
+  } finally {
+    startPending = false;
+  }
+}
+
 /* The game also starts on the first valid game interaction (a flap gesture),
    so the very first tap / SPACE press immediately launches a run. */
 function startAndFlap() {
-  startGame();
-  flap();
+  startGame({ flap: true });
 }
 
 function resetGame() {
@@ -642,10 +684,12 @@ function gameOver() {
   document.getElementById('finalScore').textContent = score;
   showScreen('GAME_OVER');
   displayScoreRecords(isNewRecord);
+  resetOnlineGameOver();                  // clear the previous run's online numbers
 
-  // Send the score to the online leaderboard. Fire-and-forget on purpose: the
-  // result must never delay the game-over screen or the local records.
-  saveBestScore(score);
+  // Close the game session, then update the personal best and the rank. All of
+  // it is fire-and-forget on purpose: the result must never delay the game-over
+  // screen or the local records.
+  finishOnlineRun(score);
 }
 
 /* ---------- Update (runs at a fixed 60 steps per second) ---------- */
@@ -1050,16 +1094,21 @@ const firebaseConfig = {
 };
 
 const SDK_BASE = 'https://www.gstatic.com/firebasejs/12.19.0/';
-const PLAYERS = 'players';                       // Firestore collection: players/{uid}
-const NAME_MIN = 3, NAME_MAX = 20;
+const PLAYERS = 'players';                       // players/{uid}          -> the leaderboard
+const SESSIONS = 'gameSessions';                 // gameSessions/{id}      -> one doc per run
+const NAME_MIN = 2, NAME_MAX = 20;
 
 /* Everything online lives here, so the rest of the game stays untouched. */
 const online = {
   status: 'idle',      // idle | loading | ready | offline | error
   uid: null,
-  username: '',
+  sessionId: null,     // the gameSessions doc of the run in progress
+  playerName: '',      // name typed for the CURRENT run
+  bestName: '',        // name attached to the stored best score
   best: 0,             // online (Firestore) best score
-  pendingScore: null,  // a score finished before sign-in was ready
+  rank: null,          // global rank of online.best
+  pendingRun: null,    // a run finished before sign-in was ready
+  authReady: null,     // resolves to the uid once anonymous sign-in finishes
   app: null, auth: null, db: null, fs: null, authApi: null,
   panelOpen: false
 };
@@ -1070,6 +1119,7 @@ const leaderboard = document.getElementById('leaderboard');
 /* True while a modal owns the screen. Deliberately DOM-free so the game loop
    and the key handler can ask the question cheaply. */
 let nameModalVisible = false;
+let startPending = false;          // a name prompt is already open
 function modalOpen() { return online.panelOpen || nameModalVisible; }
 
 /* ---------- SDK loading (lazy, with a timeout so the game never waits) ---------- */
@@ -1113,10 +1163,10 @@ async function authenticateUser() {
   return online.uid;
 }
 
-/* ---------- Username helpers ---------- */
+/* ---------- Name helpers ---------- */
 /* Length is counted in code points, not UTF-16 units, so an emoji counts as one
    character here exactly as it does in the Firestore rules. */
-function sanitizeUsername(raw) {
+function sanitizePlayerName(raw) {
   return Array.from(String(raw == null ? '' : raw)
     .replace(/[\u0000-\u001F\u007F<>]/g, '')   // strip control chars and angle brackets
     .replace(/\s+/g, ' ')                       // collapse repeated spaces
@@ -1124,84 +1174,118 @@ function sanitizeUsername(raw) {
     .slice(0, NAME_MAX).join('');
 }
 
-function validateUsername(raw) {
-  const name = sanitizeUsername(raw);
-  if (Array.from(name).length < NAME_MIN) {
-    return { ok: false, error: 'Username must be at least ' + NAME_MIN + ' characters' };
-  }
+function validatePlayerName(raw) {
+  const name = sanitizePlayerName(raw);
+  const length = Array.from(name).length;
+  if (!length) return { ok: false, error: 'Please enter your name' };
+  if (length < NAME_MIN) return { ok: false, error: 'Name must be at least ' + NAME_MIN + ' characters' };
   return { ok: true, name };
 }
 
-/* ---------- Player profile: players/{uid} ---------- */
+/* ---------- Player document: players/{uid} ---------- */
+/* Only the best score lives here, together with the name that produced it. The
+   leaderboard reads bestScore + bestScoreName, so a player can use a different
+   name on every run without ever changing their leaderboard entry. */
 async function loadPlayerProfile() {
   const { doc, getDoc } = online.fs;
   const snap = await getDoc(doc(online.db, PLAYERS, online.uid));
-  if (snap.exists()) {
-    const data = snap.data() || {};
-    online.username = sanitizeUsername(data.username) || 'Player';
-    online.best = Number(data.bestScore) || 0;
-    return data;                                   // profile exists
-  }
-  return null;                                     // first time -> ask for a name
+  if (!snap.exists()) return null;
+  const data = snap.data() || {};
+  online.bestName = sanitizePlayerName(data.bestScoreName) || 'Player';
+  online.best = Number(data.bestScore) || 0;
+  return data;
 }
 
-/* Creates the profile only if it does not exist yet. A transaction is used so a
-   second browser tab cannot overwrite a profile (and its best score) that was
-   created a moment ago. */
-async function createPlayerProfile(name) {
-  const { doc, runTransaction, serverTimestamp } = online.fs;
-  const ref = doc(online.db, PLAYERS, online.uid);
-  let created = false;
-  await runTransaction(online.db, async (tx) => {
-    const snap = await tx.get(ref);
-    if (snap.exists()) return;                  // already created - leave it alone
-    tx.set(ref, {
+/* ---------- Game session: gameSessions/{sessionId} ----------
+   One document per run: created before the first frame, closed when the run
+   ends. That keeps a history of games instead of one row per player. */
+async function createGameSession(name) {
+  online.sessionId = null;
+  if (!online.db || !online.uid) return null;
+  try {
+    const { collection, doc, setDoc, serverTimestamp } = online.fs;
+    const ref = doc(collection(online.db, SESSIONS));       // Firestore generates the id
+    await setDoc(ref, {
       uid: online.uid,
-      username: name,
-      bestScore: 0,
-      bestScoreAt: serverTimestamp(),
-      createdAt: serverTimestamp(),
-      updatedAt: serverTimestamp()
+      playerName: name,
+      startedAt: serverTimestamp(),
+      finalScore: 0,
+      completed: false
     });
-    created = true;
-  });
-  if (created) {
-    online.username = name;
-    online.best = 0;
+    online.sessionId = ref.id;
+    return ref.id;
+  } catch (e) {
+    console.warn('Game session not created:', e && e.message);
+    return null;                                            // offline fallback: just play
   }
 }
 
-/* ---------- Score submission (only ever called when a run ends) ---------- */
-/* Writes only when the new score beats the stored online best, so a worse run
-   never overwrites a better one. */
-async function saveBestScore(score) {
+async function finishGameSession(score) {
+  if (!online.sessionId || !online.db) return false;
+  try {
+    const { doc, updateDoc, serverTimestamp } = online.fs;
+    await updateDoc(doc(online.db, SESSIONS, online.sessionId), {
+      finalScore: score,
+      completed: true,
+      endedAt: serverTimestamp()
+    });
+    return true;
+  } catch (e) {
+    console.warn('Game session not updated:', e && e.message);
+    return false;
+  }
+}
+
+/* ---------- Personal best: players/{uid} ----------
+   The leaderboard score is always the highest score the player ever reached. The
+   comparison happens inside a transaction, so two tabs finishing at the same
+   moment cannot lower the stored best and a worse run never overwrites a better
+   one. bestScoreName is written only together with a new best, which is why the
+   leaderboard always shows the name that actually produced that score. */
+async function updatePlayerBestScore(score, name) {
   if (!online.db || !online.uid) {
-    // Sign-in has not finished yet - hold on to the score instead of losing it.
-    online.pendingScore = Math.max(online.pendingScore || 0, score);
+    // Sign-in has not finished yet - hold the result instead of losing it.
+    if (!online.pendingRun || score > online.pendingRun.score) online.pendingRun = { score, name };
     return false;
   }
   try {
-    const { doc, getDoc, updateDoc, serverTimestamp } = online.fs;
+    const { doc, runTransaction, serverTimestamp } = online.fs;
     const ref = doc(online.db, PLAYERS, online.uid);
-    const snap = await getDoc(ref);
-    const current = snap.exists() ? Number(snap.data().bestScore) || 0 : 0;
-
-    if (score <= current) return false;            // keep the higher score
-    if (!snap.exists()) {                          // profile vanished -> recreate it
-      await createPlayerProfile(online.username || 'Player');
-    }
-    await updateDoc(ref, {
-      bestScore: score,
-      bestScoreAt: serverTimestamp(),
-      updatedAt: serverTimestamp()
+    let improved = false;
+    await runTransaction(online.db, async (tx) => {
+      const snap = await tx.get(ref);
+      const current = snap.exists() ? Number(snap.data().bestScore) || 0 : 0;
+      if (score <= current) return;                         // keep the higher score
+      improved = true;
+      const now = serverTimestamp();
+      const payload = {
+        bestScore: score,
+        bestScoreName: name,
+        bestScoreAt: now,
+        updatedAt: now
+      };
+      if (snap.exists()) tx.update(ref, payload);
+      else tx.set(ref, Object.assign({ uid: online.uid, createdAt: now }, payload));
     });
-    online.best = score;
-    if (online.panelOpen) refreshLeaderboard();     // repaint if the player is looking at it
-    return true;
+    if (improved) {
+      online.best = score;
+      online.bestName = name;
+      if (online.panelOpen) refreshLeaderboard();            // repaint if the player is looking
+    }
+    return improved;
   } catch (e) {
     console.warn('Score not submitted:', e && e.message);
     return false;
   }
+}
+
+/* ---------- End of a run: session -> personal best -> rank ---------- */
+async function finishOnlineRun(score) {
+  const name = online.playerName;
+  await finishGameSession(score);
+  const isNewBest = await updatePlayerBestScore(score, name);
+  await refreshOnlineRank();
+  displayOnlineGameOver(isNewBest);
 }
 
 /* ---------- Leaderboard ---------- */
@@ -1213,7 +1297,7 @@ async function loadLeaderboard() {
   const snap = await getDocs(query(collection(online.db, PLAYERS), orderBy('bestScore', 'desc'), limit(10)));
   return snap.docs.map(d => {
     const data = d.data() || {};
-    return { uid: d.id, name: sanitizeUsername(data.username) || 'Player', score: Number(data.bestScore) || 0 };
+    return { uid: d.id, name: sanitizePlayerName(data.bestScoreName) || 'Player', score: Number(data.bestScore) || 0 };
   });
 }
 
@@ -1223,6 +1307,35 @@ async function calculatePlayerRank(myScore) {
   const { collection, query, where, getCountFromServer } = online.fs;
   const snap = await getCountFromServer(query(collection(online.db, PLAYERS), where('bestScore', '>', myScore)));
   return snap.data().count + 1;
+}
+
+async function refreshOnlineRank() {
+  if (!online.db || !online.uid) { online.rank = null; return null; }
+  try {
+    online.rank = await calculatePlayerRank(online.best);
+  } catch (e) {
+    online.rank = null;
+  }
+  return online.rank;
+}
+
+/* ---------- Game-over online summary ---------- */
+/* Cleared the moment a run ends, so the previous run's numbers can never be
+   shown while the new ones are still loading. */
+function resetOnlineGameOver() {
+  document.getElementById('overPlayer').textContent = 'PLAYER: ' + (online.playerName || '—');
+  document.getElementById('overGlobalBest').textContent = online.uid ? online.best : '—';
+  document.getElementById('overGlobalRank').textContent = '—';
+  document.getElementById('newOnlineRecord').hidden = true;
+  document.getElementById('topTenBadge').hidden = true;
+}
+
+/* Filled in once the session, the personal best and the rank are all settled. */
+function displayOnlineGameOver(isNewBest) {
+  document.getElementById('overGlobalBest').textContent = online.uid ? online.best : '—';
+  document.getElementById('overGlobalRank').textContent = online.rank ? '#' + online.rank : '—';
+  document.getElementById('newOnlineRecord').hidden = !isNewBest;
+  document.getElementById('topTenBadge').hidden = !(online.rank && online.rank <= 10);
 }
 
 /* ---------- Leaderboard rendering ---------- */
@@ -1282,8 +1395,10 @@ function displayLeaderboard(rows, rank) {
     line.appendChild(b);
     meBody.appendChild(line);
   } else {                                          // outside the top 10
+    // The name shown here is the one attached to the stored best score, which is
+    // not necessarily the name used on the run that is currently on screen.
     meBody.appendChild(buildLbRow(
-      [myRank == null ? '—' : '#' + myRank, online.username + ' (You)', online.best], 'lb-row me'));
+      [myRank == null ? '—' : '#' + myRank, (online.bestName || 'Player') + ' (You)', online.best], 'lb-row me'));
   }
 }
 
@@ -1335,7 +1450,7 @@ async function openLeaderboard() {
   if (!online.db) {
     online.status = 'offline';
     document.getElementById('lbStatus').textContent =
-      'Leaderboard unavailable. Check your internet connection.';
+      'Online leaderboard unavailable. Check your internet connection.';
     return;
   }
   await refreshLeaderboard();
@@ -1346,12 +1461,15 @@ function closeLeaderboard() {
   online.panelOpen = false;
 }
 
-/* ---------- Username setup screen ---------- */
+/* ---------- Name screen (asked before every run) ---------- */
+/* Resolves with the validated name. There is deliberately no way to dismiss it:
+   a run must never start without a name. */
 function showNameSetup() {
   return new Promise(resolve => {
     const modal = document.getElementById('nameModal');
     const input = document.getElementById('nameInput');
     const error = document.getElementById('nameError');
+    const playBtn = document.getElementById('namePlay');
     modal.classList.remove('hidden');
     nameModalVisible = true;
     input.value = '';
@@ -1362,66 +1480,62 @@ function showNameSetup() {
       modal.classList.add('hidden');
       nameModalVisible = false;
       input.removeEventListener('keydown', onKey);
-      document.getElementById('namePlay').removeEventListener('click', submit);
+      playBtn.removeEventListener('click', submit);
     };
-    const submit = async () => {
-      const check = validateUsername(input.value);
+    const submit = () => {
+      const check = validatePlayerName(input.value);
       if (!check.ok) { error.textContent = check.error; error.hidden = false; return; }
       error.hidden = true;
-      try {
-        await createPlayerProfile(check.name);      // stored in Firestore under the UID
-        saveStore('flappyName', check.name);        // cached locally for offline display
-        finish();
-        resolve(check.name);
-      } catch (e) {
-        console.warn('Could not save the username:', e && e.message);
-        error.textContent = 'Could not save your name. Check your connection.';
-        error.hidden = false;
-      }
+      finish();
+      resolve(check.name);
     };
     const onKey = (e) => {
       // stopPropagation matters: the modal consumes the keys it handles, so the
       // global handler can never start a run behind it. Relying on the visible
-      // flag alone is not enough - the browser can run this async continuation
+      // flag alone is not enough - the browser can run an async continuation
       // before the event reaches the document handler.
       if (e.key === 'Enter') { e.preventDefault(); e.stopPropagation(); submit(); }
-      else if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); finish(); resolve(''); }
     };
     input.addEventListener('keydown', onKey);
-    document.getElementById('namePlay').addEventListener('click', submit);
+    playBtn.addEventListener('click', submit);
     input.focus();
   });
 }
 
 /* ---------- Boot the online part (never blocks the game) ---------- */
 async function initOnline() {
-  const cachedName = sanitizeUsername(loadStore('flappyName', ''));
-  if (cachedName) { online.username = cachedName; saveStore('flappyName', cachedName); }
-
   if (!navigator.onLine) { online.status = 'offline'; return; }
-  if (!await initializeFirebase()) return;
 
-  online.status = 'loading';
+  online.authReady = (async () => {
+    if (!await initializeFirebase()) return null;
+    online.status = 'loading';
+    const uid = await authenticateUser();
+    await loadPlayerProfile();
+    online.status = 'ready';
+    if (online.pendingRun) {                            // a run finished before sign-in
+      const held = online.pendingRun;
+      online.pendingRun = null;
+      await updatePlayerBestScore(held.score, held.name);
+      await refreshOnlineRank();
+    }
+    return uid;
+  })();
+
   try {
-    await authenticateUser();
-    const profile = await loadPlayerProfile();
-    if (profile) {
-      saveStore('flappyName', online.username);
-      online.status = 'ready';
-    } else {
-      online.status = 'ready';
-      await showNameSetup();                       // first visit only
-      if (online.username) await loadPlayerProfile();   // another tab may have won the race
-    }
-    if (online.pendingScore != null) {              // submit a score from before sign-in
-      const held = online.pendingScore;
-      online.pendingScore = null;
-      await saveBestScore(held);
-    }
+    await online.authReady;
   } catch (e) {
     console.warn('Sign-in failed:', e && e.code || e && e.message);
     online.status = 'error';
   }
+}
+
+/* Waits briefly for anonymous sign-in so the game session can be stored with the
+   right UID, but never blocks the game for long: on a slow or dead network the
+   run simply starts without a session. */
+async function waitForAuth() {
+  if (!online.authReady) return null;
+  try { return await withTimeout(online.authReady, 5000, 'Sign-in'); }
+  catch (e) { return null; }
 }
 
 lbBtn.addEventListener('click', openLeaderboard);
